@@ -8,11 +8,10 @@
  * in the user guide at https://docs.gradle.org/4.4.1/userguide/multi_project_builds.html
  */
 
-/*
-// To declare projects as part of a multi-project build use the 'include' method
-include 'shared'
-include 'api'
-include 'services:webservice'
-*/
+rootProject.name = "soma-ai"
 
-rootProject.name = 'app'
+// Core module with plugin API
+include(":core")
+
+// Plugins directory for LEGO architecture
+include(":plugins")
