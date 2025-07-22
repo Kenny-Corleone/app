@@ -13,5 +13,11 @@ rootProject.name = "soma-ai"
 // Core module with plugin API
 include(":core")
 
+// Application module
+include(":app")
+
 // Plugins directory for LEGO architecture
 include(":plugins")
+
+// LLaMA Plugin for offline AI inference
+include(":plugins:llama-plugin")

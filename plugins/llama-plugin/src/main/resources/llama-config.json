@@ -1,0 +1,25 @@
+{
+  "model": {
+    "path": "models/llama-2-7b.Q4_K_M.gguf",
+    "type": "gguf",
+    "contextSize": 2048,
+    "gpuLayers": 0
+  },
+  "inference": {
+    "temperature": 0.7,
+    "repeatPenalty": 1.1,
+    "topK": 40,
+    "topP": 0.9,
+    "maxTokens": 512,
+    "antiPrompt": ["User:", "Human:"]
+  },
+  "performance": {
+    "threads": 4,
+    "batchSize": 512
+  },
+  "features": {
+    "enableStreaming": false,
+    "enableLogging": true,
+    "cacheEnabled": true
+  }
+}
