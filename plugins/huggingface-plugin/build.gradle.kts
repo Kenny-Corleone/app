@@ -4,6 +4,7 @@ plugins {
 
 dependencies {
     implementation(project(":core"))
+    implementation(project(":plugin-runtime"))
     
     // Coroutines для async операций
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")

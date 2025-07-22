@@ -3,6 +3,7 @@ package com.soma.plugins.huggingface
 import com.soma.plugin.api.IAgentPlugin
 import com.soma.plugin.api.AgentRequest
 import com.soma.plugin.api.AgentResponse
+import com.soma.plugin.runtime.*
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
@@ -17,25 +18,32 @@ import java.util.concurrent.TimeUnit
 
 /**
  * HuggingFace плагин для онлайн обработки запросов через HuggingFace Inference API
- * Реализует LEGO-архитектуру SOMA AI
+ * Реализует LEGO-архитектуру SOMA AI с расширенными runtime возможностями
  */
-class HuggingFacePlugin : IAgentPlugin {
+class HuggingFacePlugin : IAgentPlugin, EventBusListener {
     
     private val logger = LoggerFactory.getLogger(HuggingFacePlugin::class.java)
     
     override val name: String = "HuggingFace Online Agent"
+    override val version: String = "1.1.0"
+    override val description: String = "Online AI inference using HuggingFace models"
     
     private val moshi = Moshi.Builder()
         .add(KotlinJsonAdapterFactory())
         .build()
     
-    private val config: HuggingFaceConfig by lazy { loadConfig() }
+    // Runtime состояние
+    private var pluginContext: PluginContext? = null
+    private var session: PluginSession? = null
+    private var isLoaded = false
+    private var config: HuggingFaceConfig? = null
     
     private val httpClient: OkHttpClient by lazy {
+        val cfg = config ?: createFallbackConfig()
         OkHttpClient.Builder()
-            .connectTimeout(config.timeouts.connectTimeoutMs, TimeUnit.MILLISECONDS)
-            .readTimeout(config.timeouts.readTimeoutMs, TimeUnit.MILLISECONDS)
-            .writeTimeout(config.timeouts.writeTimeoutMs, TimeUnit.MILLISECONDS)
+            .connectTimeout(cfg.timeouts.connectTimeoutMs, TimeUnit.MILLISECONDS)
+            .readTimeout(cfg.timeouts.readTimeoutMs, TimeUnit.MILLISECONDS)
+            .writeTimeout(cfg.timeouts.writeTimeoutMs, TimeUnit.MILLISECONDS)
             .build()
     }
     
@@ -61,11 +69,31 @@ class HuggingFacePlugin : IAgentPlugin {
         return try {
             logger.info("Processing HuggingFace request: ${request.type}")
             
+            // Обновляем сессию
+            session?.touch()
+            
+            // Публикуем событие начала обработки
+            pluginContext?.eventBus?.post(
+                PluginEvent("request.started", 
+                    mapOf("plugin" to name, "request_type" to request.type),
+                    name)
+            )
+            
+            // Сохраняем статистику
+            pluginContext?.sharedContext?.increment("hf_requests_total")
+            
             val task = detectTask(request)
             val model = selectModel(request, task)
             val response = makeApiRequest(request.content, model, task)
             
             logger.info("HuggingFace response generated successfully")
+            
+            // Публикуем событие успешного завершения
+            pluginContext?.eventBus?.post(
+                PluginEvent("request.completed",
+                    mapOf("plugin" to name, "success" to true, "model" to model),
+                    name)
+            )
             
             AgentResponse(
                 success = true,
@@ -74,15 +102,20 @@ class HuggingFacePlugin : IAgentPlugin {
                     "model" to model,
                     "task" to task.taskName,
                     "plugin" to name,
+                    "version" to version,
                     "timestamp" to System.currentTimeMillis(),
-                    "api" to "huggingface"
+                    "api" to "huggingface",
+                    "session_id" to (session?.sessionId ?: "none")
                 )
             )
             
         } catch (e: Exception) {
             logger.error("Error processing HuggingFace request", e)
             
-            if (config.features.enableFallback) {
+            // Публикуем событие ошибки
+            pluginContext?.eventBus?.post(PluginEvent.error(e, name))
+            
+            if (config?.features?.enableFallback == true) {
                 handleFallback(request, e)
             } else {
                 AgentResponse(
@@ -98,9 +131,140 @@ class HuggingFacePlugin : IAgentPlugin {
         }
     }
     
+    override fun onLoad(context: Any?) {
+        if (context is PluginContext) {
+            this.pluginContext = context
+            this.session = context.session
+            this.isLoaded = true
+            
+            logger.info("HuggingFace Plugin loaded with context")
+            
+            // Загружаем конфигурацию
+            this.config = loadConfig()
+            
+            // Подписываемся на события
+            context.eventBus.subscribe(this)
+            
+            // Сохраняем статистику
+            context.sharedContext.set("hf_loaded_at", System.currentTimeMillis())
+            context.sharedContext.set("hf_requests_total", 0)
+            context.sharedContext.set("hf_models_cache", mutableMapOf<String, Any>())
+            
+            // Публикуем событие загрузки
+            context.eventBus.post(PluginEvent.pluginLoaded(name))
+            
+            logger.info("HuggingFace Plugin initialized successfully")
+        } else {
+            logger.warn("HuggingFace Plugin loaded without proper context")
+        }
+    }
+    
+    override fun onUnload() {
+        logger.info("Unloading HuggingFace Plugin")
+        
+        // Отписываемся от событий
+        pluginContext?.eventBus?.unsubscribe(this)
+        
+        // Публикуем событие выгрузки
+        pluginContext?.eventBus?.post(
+            PluginEvent("plugin.unloaded", name, "core")
+        )
+        
+        // Закрываем HTTP клиент
+        try {
+            httpClient.dispatcher.executorService.shutdown()
+            httpClient.connectionPool.evictAll()
+        } catch (e: Exception) {
+            logger.warn("Error closing HTTP client", e)
+        }
+        
+        // Закрываем сессию
+        session?.close()
+        
+        // Очищаем состояние
+        this.isLoaded = false
+        this.pluginContext = null
+        this.session = null
+        this.config = null
+        
+        logger.info("HuggingFace Plugin unloaded")
+    }
+    
+    override fun onEvent(event: Any) {
+        if (event is PluginEvent) {
+            handlePluginEvent(event)
+        }
+    }
+    
+    // EventBusListener implementation
+    override fun onEvent(event: PluginEvent) {
+        handlePluginEvent(event)
+    }
+    
+    override fun shouldHandle(event: PluginEvent): Boolean {
+        return when (event.type) {
+            PluginEvent.MEMORY_UPDATE -> true
+            "config.updated" -> true
+            "api.token.refreshed" -> true
+            "system.shutdown" -> true
+            else -> false
+        }
+    }
+    
+    override val priority: Int = 5
+    override val listenerId: String = "huggingface-plugin"
+    
+    override fun isReady(): Boolean = isLoaded && config != null
+    
+    override fun getMetadata(): Map<String, Any> {
+        return super.getMetadata() + mapOf(
+            "model_type" to "online",
+            "api_provider" to "huggingface",
+            "supports_streaming" to false,
+            "loaded" to isLoaded,
+            "session_active" to (session?.isActive ?: false),
+            "requests_processed" to (pluginContext?.sharedContext?.get<Int>("hf_requests_total") ?: 0),
+            "config_loaded" to (config != null)
+        )
+    }
+    
     /**
-     * Загрузка конфигурации из ресурсов
+     * Обработка событий плагина
      */
+    private fun handlePluginEvent(event: PluginEvent) {
+        when (event.type) {
+            PluginEvent.MEMORY_UPDATE -> {
+                logger.debug("HF plugin received memory update: ${event.payload}")
+                if (event.payload is Map<*, *>) {
+                    @Suppress("UNCHECKED_CAST")
+                    val data = event.payload as Map<String, Any>
+                    
+                    // Обновляем кеш моделей
+                    data["hf_models"]?.let { models ->
+                        pluginContext?.sharedContext?.set("hf_models_cache", models)
+                    }
+                }
+            }
+            "config.updated" -> {
+                logger.info("Received config update request")
+                config = loadConfig()
+            }
+            "api.token.refreshed" -> {
+                logger.info("API token was refreshed")
+                config = loadConfig()
+            }
+            "system.shutdown" -> {
+                logger.info("Received system shutdown signal")
+                onUnload()
+            }
+            else -> {
+                logger.debug("Received unhandled event: ${event.type}")
+            }
+        }
+    }
+    
+    // Остальные методы остаются без изменений, но с обновленными вызовами config
+    
     private fun loadConfig(): HuggingFaceConfig {
         return try {
             val configStream = javaClass.classLoader
@@ -117,9 +281,6 @@ class HuggingFacePlugin : IAgentPlugin {
         }
     }
     
-    /**
-     * Создание fallback конфигурации
-     */
     private fun createFallbackConfig(): HuggingFaceConfig {
         return HuggingFaceConfig(
             apiToken = System.getenv("HUGGINGFACE_API_TOKEN") ?: "hf_fallback_token",
@@ -136,9 +297,6 @@ class HuggingFacePlugin : IAgentPlugin {
         )
     }
     
-    /**
-     * Определение типа задачи на основе запроса
-     */
     private fun detectTask(request: AgentRequest): HuggingFaceTask {
         val content = request.content.lowercase()
         val taskHint = request.metadata["task"]?.toString()?.lowercase()
@@ -152,9 +310,6 @@ class HuggingFacePlugin : IAgentPlugin {
         }
     }
     
-    /**
-     * Выбор модели для задачи
-     */
     private fun selectModel(request: AgentRequest, task: HuggingFaceTask): String {
         val requestedModel = request.metadata["model"]?.toString()
         
@@ -162,15 +317,14 @@ class HuggingFacePlugin : IAgentPlugin {
             return requestedModel
         }
         
-        val availableModels = config.models[task.taskName]
-        return availableModels?.firstOrNull() ?: config.defaultModel
+        val cfg = config ?: createFallbackConfig()
+        val availableModels = cfg.models[task.taskName]
+        return availableModels?.firstOrNull() ?: cfg.defaultModel
     }
     
-    /**
-     * Выполнение API запроса с повторами
-     */
     private suspend fun makeApiRequest(content: String, model: String, task: HuggingFaceTask): String = withContext(Dispatchers.IO) {
-        val url = "${config.apiBaseUrl}/models/$model"
+        val cfg = config ?: createFallbackConfig()
+        val url = "${cfg.apiBaseUrl}/models/$model"
         
         val requestData = HuggingFaceRequest(
             inputs = content,
@@ -184,14 +338,14 @@ class HuggingFacePlugin : IAgentPlugin {
         
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${config.apiToken}")
+            .addHeader("Authorization", "Bearer ${cfg.apiToken}")
             .addHeader("Content-Type", JSON_MEDIA_TYPE)
             .post(requestBody)
             .build()
         
         var lastException: Exception? = null
         
-        repeat(config.retry.maxAttempts) { attempt ->
+        repeat(cfg.retry.maxAttempts) { attempt ->
             try {
                 val response = httpClient.newCall(request).execute()
                 return@withContext processResponse(response, task)
@@ -199,8 +353,8 @@ class HuggingFacePlugin : IAgentPlugin {
                 lastException = e
                 logger.warn("Attempt ${attempt + 1} failed", e)
                 
-                if (attempt < config.retry.maxAttempts - 1) {
-                    delay(config.retry.delayMs)
+                if (attempt < cfg.retry.maxAttempts - 1) {
+                    delay(cfg.retry.delayMs)
                 }
             }
         }
@@ -208,24 +362,22 @@ class HuggingFacePlugin : IAgentPlugin {
         throw lastException ?: IOException("All retry attempts failed")
     }
     
-    /**
-     * Построение параметров для запроса
-     */
     private fun buildParameters(task: HuggingFaceTask): Map<String, Any> {
+        val cfg = config ?: createFallbackConfig()
         val baseParams = mutableMapOf<String, Any>(
-            "temperature" to config.inference.temperature,
-            "top_k" to config.inference.topK,
-            "top_p" to config.inference.topP,
-            "do_sample" to config.inference.doSample
+            "temperature" to cfg.inference.temperature,
+            "top_k" to cfg.inference.topK,
+            "top_p" to cfg.inference.topP,
+            "do_sample" to cfg.inference.doSample
         )
         
         when (task) {
             HuggingFaceTask.TEXT_GENERATION -> {
-                baseParams["max_new_tokens"] = config.inference.maxTokens
+                baseParams["max_new_tokens"] = cfg.inference.maxTokens
                 baseParams["return_full_text"] = false
             }
             HuggingFaceTask.SUMMARIZATION -> {
-                baseParams["max_length"] = config.inference.maxTokens
+                baseParams["max_length"] = cfg.inference.maxTokens
                 baseParams["min_length"] = 10
             }
             else -> {
@@ -236,9 +388,6 @@ class HuggingFacePlugin : IAgentPlugin {
         return baseParams
     }
     
-    /**
-     * Обработка ответа API
-     */
     private fun processResponse(response: Response, task: HuggingFaceTask): String {
         val responseBody = response.body?.string()
             ?: throw IOException("Empty response body")
@@ -257,11 +406,7 @@ class HuggingFacePlugin : IAgentPlugin {
         return parseResponseContent(responseBody, task)
     }
     
-    /**
-     * Парсинг содержимого ответа
-     */
     private fun parseResponseContent(responseBody: String, task: HuggingFaceTask): String {
-        // HuggingFace API может возвращать массив или объект
         return try {
             when (task) {
                 HuggingFaceTask.TEXT_GENERATION -> {
@@ -300,9 +445,6 @@ class HuggingFacePlugin : IAgentPlugin {
         }
     }
     
-    /**
-     * Обработка fallback в случае ошибки
-     */
     private fun handleFallback(request: AgentRequest, error: Exception): AgentResponse {
         logger.info("Using fallback response for failed request")
         

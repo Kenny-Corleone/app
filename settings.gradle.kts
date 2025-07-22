@@ -13,6 +13,9 @@ rootProject.name = "soma-ai"
 // Core module with plugin API
 include(":core")
 
+// Plugin runtime system with lifecycle and events
+include(":plugin-runtime")
+
 // Application module
 include(":app")
 
