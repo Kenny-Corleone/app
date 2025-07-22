@@ -1,0 +1,33 @@
+{
+  "api_token": "hf_YOUR_TOKEN_HERE",
+  "default_model": "gpt2",
+  "api_base_url": "https://api-inference.huggingface.co",
+  "inference": {
+    "temperature": 0.7,
+    "top_k": 50,
+    "top_p": 0.9,
+    "max_tokens": 256,
+    "do_sample": true
+  },
+  "models": {
+    "text-generation": ["gpt2", "microsoft/DialoGPT-medium", "EleutherAI/gpt-neo-1.3B"],
+    "summarization": ["facebook/bart-large-cnn", "t5-base"],
+    "translation": ["t5-base", "Helsinki-NLP/opus-mt-en-fr"],
+    "text-classification": ["cardiffnlp/twitter-roberta-base-sentiment-latest"],
+    "question-answering": ["deepset/roberta-base-squad2"]
+  },
+  "timeouts": {
+    "connect_timeout_ms": 10000,
+    "read_timeout_ms": 30000,
+    "write_timeout_ms": 10000
+  },
+  "retry": {
+    "max_attempts": 3,
+    "delay_ms": 1000
+  },
+  "features": {
+    "enable_logging": true,
+    "enable_fallback": true,
+    "cache_responses": false
+  }
+}

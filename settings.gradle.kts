@@ -21,3 +21,6 @@ include(":plugins")
 
 // LLaMA Plugin for offline AI inference
 include(":plugins:llama-plugin")
+
+// HuggingFace Plugin for online AI inference
+include(":plugins:huggingface-plugin")

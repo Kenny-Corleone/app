@@ -1,3 +1,0 @@
-/workspace/app/src/main/kotlin/com/soma/app/di/AppComponent.kt
-/workspace/app/src/main/kotlin/com/soma/app/SomaApplication.kt
-/workspace/app/src/main/kotlin/com/soma/app/di/AgentModule.kt
